@@ -1,0 +1,18 @@
+services:
+
+  jupyter:
+
+    image: jupyter/pyspark-notebook
+    container_name: jupyter-pyspark-lab
+    ports:
+      - "${PORT_JUPYTER}:${PORT_JUPYTER}"
+      - "${PORT_SPARK}:${PORT_SPARK}"
+    working_dir: /home/jovyan/work
+    volumes:
+      - ./libros:/home/jovyan/work
+      - ./.env:/home/jovyan/.env
+    environment:
+      - JUPYTER_TOKEN=${JUPYTER_TOKEN}
+      - SPARK_LOCAL_IP=${SPARK_LOCAL_IP}
+      - PYSPARK_PYTHON=${PYSPARK_PYTHON}
+    command: start-notebook.sh --NotebookApp.token='${JUPYTER_TOKEN}'
