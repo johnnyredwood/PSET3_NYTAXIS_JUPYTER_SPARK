@@ -4,10 +4,17 @@ Proyecto 03
 John Ochoa Abad 345743
 
 #Github Link:
-
+https://github.com/johnnyredwood/PSET3_NYTAXIS_JUPYTER_SPARK/tree/main
 
 #Descripción del proyecto:
+Implementé una infraestructura analítica completa utilizando Docker Compose que integra Jupyter+Spark con Snowflake para procesar el dataset 
+NYC TLC Trips 2015-2025. El proyecto replica el proceso de ingesta de datos Parquet de taxis Yellow y Green hacia un esquema raw en Snowflake, 
+construyendo posteriormente una tabla analítica unificada (One Big Table) en el esquema analytics.
 
+Desarrollé cinco notebooks parametrizados que gestionan todo el flujo de datos: desde la ingesta inicial y enriquecimiento con Taxi Zones, 
+hasta la construcción de la OBT y el análisis de 20 preguntas de negocio. Implementé controles de idempotencia, auditoría de cargas y 
+validaciones de calidad, asegurando que la reingesta de meses no duplique registros. La infraestructura se configura completamente mediante 
+variables de ambiente, manteniendo las credenciales seguras y el proceso reproducible.
 
 
 #Checklist de aceptación
@@ -21,85 +28,64 @@ John Ochoa Abad 345743
 [x] README claro: pasos, variables, esquema, decisiones, troubleshooting.
 
 
+#Variables de ambiente: listado y propósito; guía para .env.
 
-#Layout para .env a manera de ejecutar conexión con Snowflake desde Jupyter Notebook
-Para la ejecución de las queries desde un Jupyter Notebook a manera de obtener datos de respuesta en formato de Pandas Data Frames para responder
-las preguntas de negocio se empleo un .env donde se colocaron las credenciales para la conexión con Snowflake. Para replicar dicha conexión usando crendenciales
-propias el layout que se debe emplear en el .env es:
+Para la ejecución de los notebooks se definieron las siguientes variables de ambiente de Snowflake:
 
-SNOWFLAKE_USER=[valor]
-SNOWFLAKE_PRIVATE_KEY=[valor]
-SNOWFLAKE_ACCOUNT=[valor]
-SNOWFLAKE_WAREHOUSE=[valor]
-SNOWFLAKE_DATABASE=[valor]
-SNOWFLAKE_SCHEMA=[valor]
+*SNOWFLAKE_URL
+*SNOWFLAKE_ACCOUNT
+*SNOWFLAKE_USER
+*SNOWFLAKE_PASSWORD
+*SNOWFLAKE_WAREHOUSE
+*SNOWFLAKE_DATABASE
+*SNOWFLAKE_SCHEMA_RAW
+*SNOWFLAKE_SCHEMA_ANALYTICS
+*SNOWFLAKE_ROLE
 
-Para mi caso a manera de otorgar mayor seguridad estoy generando la conexión con llave privada (RSA) la cual debe ser colocada en una sola línea con caracteres de escape \n para
-saltos de línea de la clave. De igual forma, se puede emplear conexión únicamente con el password del usuario a continuación pero se necesitaría ajustar el método de conexión del 
-Jupyter Notebook sustituyendo private_key por password en los argumentos de la conexión y de igual manera sería necesario ajustar en todos los métodos del pipeline de Mage la forma de 
-conexión a manera de conectarse mediante solo password y no private key. Esto del Jupyter Notebook se manejo de esta manera para en el docker compose únicamente tener el servicio de Mage
-sin requerir de un servicio adicional de Jupyter Notebook. Por último para saber como generar la llave privada y pública para Snowflake revisar este link: https://docs.snowflake.com/en/user-guide/key-pair-auth
+Adicionalmente, se configuraron parámetros de origen de datos y entorno:
 
-*Importante*
+*SOURCE_PATH: URL base del dataset NYC TLC
+*YEARS: Rango de años a procesar (2015-2025)
+*MONTHS: Meses a incluir en el procesamiento
+*SERVICES: Tipos de servicio (yellow, green)
 
-Destaco que en mi data_analysis.ipynb script para la ejecución de las queries estoy llamando directamente a la database ny_taxi y al schema taxis_gold para replicar el uso de dichas queries llamar a su esquema y database
-de la misma manera o actualizar las queries con el nombre de database y schema de su selección
+Con estas variables siguiendo el ejemplo del .env.example incluido en el proyecto se puede reproducir el mismo con credenciales propias
+de esta manera se gestiona correctamente los datos sensibles.
 
-#Descripción y diagrama de arquitectura (bronze/silver/gold) y orquestación en Mage.
+#Arquitectura (diagrama/tabla): Spark/Jupyter → Snowflake (raw → analytics.obt_trips).
 
-*Descripción
+┌─────────────────┐    ┌──────────────────┐    ┌──────────────────┐
+│   FUENTE        │    │   PROCESAMIENTO  │    │   DESTINO        │
+│                 │    │   SPARK/JUPYTER  │    │   SNOWFLAKE      │
+│                 │    │                  │    │                  │
+│  NYC TLC Data   │──> │   Docker         │    │                  │
+│  Parquet Files  │    │   Container      │    │                  │
+│  (2015-2025)    │    │                  │    │ ┌──────────────┐ │
+│                 │    │ ┌──────────────┐ │    │ │ Esquema Raw  │ │
+│  Yellow/Green   │    │ │ Notebook 01  │ │    │ │              │ │ 
+│  Taxi Trips     │    │ │ Ingesta      │─┼────────> Taxis Raw  │ │
+└─────────────────┘    │ └──────────────┘ │    │ │              │ │
+                       │ │ Notebook 02  │ │    │ │  Joins con   │ │
+                       │ │ Unificar     │─┼────────> Taxi Zones │ │
+ 					   │ │ Datos        │ │    │ └───────│──────┘ │
+                       │ └──────────────┘ │    │ ┌───────V──────┐ │
+                       │ │ Notebook 03  │ │    │ │    Esquema   │ │
+                       │ │ Construcción │      │ │  Analytics   │ │
+                       │ │ OBT          │─┼────────> OBT con    │ │              
+                       │ └──────────────┘ │    │ │  derivadas   │ │           
+                       │ │ Notebook 04  │ │    │ │              │ │
+                       │ │ Validación   │─┼────────> Datos      │ │
+                       │ └──────────────┘ │    │ │   depurados  │ │
+                       │ │ Notebook 05  │ │    │ │   y lógicos  │ │
+                       │ │ Análisis     │<┼────────  en OBT     │ │
+					   │ │   de negocio │ │    │ └──────────────┘ │
+                       │ └──────────────┘ │    │                  │
+                       └──────────────────┘    └──────────────────┘
 
-1. Loaders+Exporters for Taxis Data: ingestión en Mage que descarga de forma incremental y controlada los archivos Parquet de viajes de taxis amarillos de Nueva York 
-(2015–2025) desde la fuente pública, los procesa por lotes para no saturar memoria, enriquece los datos con metadatos de ejecución (run_id, ventana temporal, lote, mes, año), 
-elimina inconsistencias, y finalmente los carga en una tabla en Snowflake con su esquema y restricciones de llave primaria. Además, utiliza un checkpoint en JSON para retomar 
-la carga en caso de interrupción, garantizando idempotencia y reanudación segura.
-2. Loader for Taxis Zones: data loader en Mage que descarga el archivo público taxi_zone_lookup.csv desde el repositorio oficial de datos de taxis de Nueva York, lo lee directamente 
-en un DataFrame de Pandas, imprime información de confirmación (columnas y estado de descarga) y retorna el DataFrame listo para usarse en las siguientes etapas del pipeline.
-En caso de error durante la descarga o lectura, captura la excepción y muestra un mensaje de fallo.
-3. Exporter for Taxis Zones: data exporter en Mage que toma un DataFrame (en este caso, el de zonas de taxis de Nueva York) y lo carga en Snowflake. Para la conexión, utiliza credenciales 
-seguras almacenadas en Mage Secrets (ACCOUNT_ID, SNOWFLAKE_USER_TRANSFORMER, RSA_PRIVATE, etc.), establece la conexión con snowflake.connector, y luego usa write_pandas para escribir
-el DataFrame en la tabla NEWYORK_TAXIS_ZONES.
-4. Bronze DBT: Este bloque combina Mage + dbt para orquestar la transformación de datos en la capa Bronze. Primero, la función execute_dbt ejecuta los comandos dbt deps y dbt run 
-sobre el proyecto NY_TAXI_DBT, configurando las credenciales de Snowflake a partir de secretos de Mage, de modo que se instalan dependencias y se corren los modelos etiquetados 
-como bronze. Luego, los modelos SQL de dbt normalizan y estandarizan los datasets: crean tablas en el esquema BRONZE a partir de las fuentes raw, generando una tabla para taxis verdes
- y otra para amarillos (con sus columnas renombradas y un campo service_type que indica el tipo de servicio), y una tabla de zonas de taxis que homogeniza columnas (LocationID, Borough, 
- Zone, service_zone). En conjunto, esto asegura que los datos crudos de ingestión pasen a una capa Bronze estandarizada e idempotente, lista para transformaciones posteriores en Silver y Gold.
- 5. Silver DBT: Se construye es la capa Silver del pipeline en dbt, orquestada desde Mage. El modelo SQL toma los viajes de taxis verdes y amarillos ya depurados en Bronze, los une 
- y estandariza en una única tabla de viajes, enriquecida con la información de zonas (pickup y dropoff), conversiones de fechas a UTC y NYC, cálculo de duración, velocidad promedio 
- y categorización de rate_code y payment_type. Además, se generan flags de calidad (duration_flag, speed_flag) y se filtran registros inválidos mediante reglas estrictas (pasajeros > 0,
- montos ≥ 0, tiempos consistentes, etc.). Luego, en el archivo schema.yml, se definen tests automáticos para validar unicidad, no-nulos y expresiones de negocio en las columnas críticas 
- (por ejemplo, fare_amount >= 0, dropoff_datetime_utc > pickup_datetime_utc). Finalmente, el transformer de Mage ejecuta dbt deps, dbt run --select tag:silver y dbt test --select tag:silver,
- asegurando que la capa Silver se genere con integridad y control de calidad antes de pasar a Gold.
-6. Gold DBT: se construye la capa Gold del pipeline de NYC Taxi. Aquí, los datos ya estandarizados y validados en Silver se integran con las dimensiones del modelo (fecha, hora, zonas de pickup 
-y dropoff, proveedor, tipo de pago, código de tarifa, tipo de servicio y flags de viaje) para crear la tabla de hechos principal (fact_trips), con métricas calculadas como duración, velocidad promedio,
- distancia, montos y porcentaje de propina. Además, se generan las tablas de dimensiones auxiliares (dim_date_pickup, dim_date_dropoff, dim_time_pickup, dim_time_dropoff, dim_zone_pickup, dim_zone_dropoff,
- dim_vendor, dim_rate_code, dim_payment_type, dim_service_type, dim_trip_type) con claves surrogate (SK) y atributos descriptivos, permitiendo relaciones 1:N consistentes para análisis OLAP. El transformer
- de Mage ejecuta dbt deps, dbt run --select tag:gold y dbt test --select tag:gold, asegurando que todas las tablas Gold se generen correctamente y que los tests de calidad (unicidad de claves, integridad referencial,
- valores válidos en métricas críticas) se cumplan antes de disponibilizar la capa para análisis.
+#Matriz de cobertura 2015–2025 por servicio/mes (ok/falta/fallido).
 
-*Orquestación en Mage (ver evidencias para pipeline real)
-
- Loaders - Taxi Trips
-        │
-        ▼
-Loader - Taxi Zones
-        │
-        ▼
-Exporter - Taxi Zones
-        │
-        ▼
-    DBT Bronze
-        │
-        ▼
-    DBT Silver
-        │
-        ▼
-    DBT Gold
-
-#Cobertura de meses 2015–2025 (matriz por servicio) y estado de carga (Parquet).
-
-Se verificó la cobertura completa de datos de taxis amarillos y verdes desde 2015 hasta 2025. Todos los archivos Parquet fueron correctamente ingestados y consolidados en las tablas BRONZE correspondientes 
-(RAW_NEWYORK_TAXIS_YELLOW_BRONZE y RAW_NEWYORK_TAXIS_GREEN_BRONZE). La cantidad de registros por mes y por tipo de taxi se contabilizó para confirmar la consistencia de la carga y la integridad de los datos.
+Se leyeron los datos directamente desde https://d37ci6vzurychx.cloudfront.net y tras el consumo de los mismos en Jupyter se registro 
+la siguiente matriz de datos por servicio y mes:
 
 | AÑO  | MES   | YELLOW_COUNT | GREEN_COUNT | ESTADO_LOAD |
 | ---- | ----- | ------------ | ----------- | ----------- |
@@ -230,119 +216,200 @@ Se verificó la cobertura completa de datos de taxis amarillos y verdes desde 20
 | 2025 | 5     | 4591845      | 55399       | OK          |
 | 2025 | 6     | 4322960      | 49390       | OK          |
 | 2025 | 7     | 3898963      | 48205       | OK          |
+| 2025 | 8     | 3574091      | 46306       | OK          |
 
 
-#Estrategia de pipeline de backfill mensual e idempotencia
+#Pasos para Docker Compose y ejecución de notebooks (orden y parámetros).
 
-La estrategia de pipeline implementada sigue un enfoque de backfill mensual, lo que permite procesar de manera incremental los datos históricos de viajes de taxis de Nueva York sin reejecutar todo el conjunto de
-datos desde cero. Cada mes se generan los lotes correspondientes con metadatos de ejecución (run_id, ventana_temporal, lote_mes, year), lo que asegura que los datos cargados en Snowflake sean consistentes y trazables, 
-facilitando auditoría y reproducibilidad.
+Prerrequisitos
+*Docker instalado
+*Docker Compose instalado
+*Archivo .env configurado con las credenciales de Snowflake
 
-Además, el pipeline está diseñado para ser idempotente: los loaders y exporters manejan checkpoints y verificaciones (por ejemplo, control de archivos Parquet descargados y registros existentes en Snowflake), de modo 
-que si una ejecución falla, puede reanudarse sin duplicar datos ni alterar la integridad de la tabla. Esta combinación de backfill controlado y ejecución segura garantiza que tanto los datos históricos como los nuevos
- se procesen de manera confiable, eficiente y repetible. Al igual se incluyen primary keys en nuestra tabla inicial de carga de datos de modo que los datos no se dupliquen a la hora de ingresarse
- 
-#Gestión de secretos (nombres y propósito) y cuenta de servicio / rol (permisos mínimos).
+1. Descargar de repositorio y Configuración del Ambiente
 
-En el pipeline se implementa una gestión centralizada de secretos a través de Mage AI, asegurando que credenciales sensibles no estén hardcodeadas en el código y puedan rotarse de forma segura. Los secretos utilizados son:
+- Descargar el repositorio a su entorno local con
+git clone https://github.com/johnnyredwood/PSET3_NYTAXIS_JUPYTER_SPARK.git
 
-ACCOUNT_ID: Identificador de la cuenta de Snowflake.
+Crear archivo de variables de ambiente:
 
-SNOWFLAKE_USER_TRANSFORMER: Usuario de Snowflake con permisos limitados para ejecutar transformaciones y cargas de datos.
+- Copiar el template y configurar con valores reales
+cp .env.example .env
 
-RSA_PRIVATE: Clave privada RSA utilizada para la autenticación segura con Snowflake.
+- Editar el archivo .env con tus credenciales
+nano .env
 
-WAREHOUSE: Nombre del warehouse de Snowflake para ejecutar consultas.
+2. Verificar estructura de directorios:
 
-DATABASE: Base de datos destino en Snowflake.
+proyecto/
+├── docker-compose.yml
+├── .env
+├── notebooks/
+│   ├── 01_ingesta_parquet_raw.ipynb
+│   ├── 02_enriquecimiento_y_unificacion.ipynb
+│   ├── 03_construccion_obt.ipynb
+│   ├── 04_validaciones_y_exploracion.ipynb
+│   └── 05_data_analysis.ipynb
+└── work/
 
-SCHEMA: Esquema de Snowflake donde se crean tablas de Bronze, Silver y Gold.
+3. Inicialización de la Infraestructura
+Levantar los servicios con Docker Compose:
 
-ROLE_LOW_PRIVILEDGES: Rol con permisos mínimos necesarios para realizar inserciones y lecturas, evitando privilegios excesivos.
+- Ejecutar en el directorio del proyecto el siguiente comando para levantar el contenedor con variables de entorno de .env
+docker-compose --env-file .env up -d
 
-La cuenta de servicio y rol asociado se configuran siguiendo el principio de mínimos privilegios: la cuenta puede ejecutar cargas, transformaciones y tests en dbt sobre las tablas necesarias, pero no tiene permisos de administración 
-ni acceso a datos sensibles fuera del scope del pipeline. Esto asegura seguridad, auditoría y control sobre el acceso a los datos.
+- Verificar que el contenedor esté corriendo
+docker-compose ps
 
-Para la ejecución de los proceso ELT se genero desde el usuario principal de Snowflake un usuario con privilegios mínimos y un rol asignado al usuario al cual se le asignaron los siguientes
-privilegios únicos:
+4. Acceder a Jupyter Notebook:
+Acceder al Jupyter Notebook del contenedor con el puerto y token indicados en su .env
 
-* GRANT USAGE ON DATABASE mi_base TO ROLE mi_rol;
-* GRANT USAGE ON SCHEMA mi_base.mi_esquema TO ROLE mi_rol;
-* GRANT SELECT ON ALL TABLES IN SCHEMA mi_base.mi_esquema TO ROLE mi_rol;
-* GRANT SELECT ON FUTURE TABLES IN SCHEMA mi_base.mi_esquema TO ROLE mi_rol;
-* GRANT CREATE TABLE, CREATE VIEW ON SCHEMA mi_base.mi_esquema TO ROLE mi_rol;
+URL: http://localhost:puerto
+Token: [valor de JUPYTER_TOKEN en .env]
 
-Posteriormente, se registraron las credenciales de dicho usuario en el .env local y en los secrets de Mage (ver evidencias) para que los procesos los manejemos
-únicamente con el usuario de privilegios mínimos lo cual es lo más seguro
+5. Ejecución Secuencial de Notebooks
+Orden de ejecución obligatorio:
 
-#Diseño de silver (reglas de limpieza/estandarización) y gold (hechos/dimensiones).
+Notebook 01 - Ingesta de Datos RAW
+Parámetros esperados:
+- Años: 2015-2025 (configurado en .env)
+- Meses: 1-12 (configurado en .env)  
+- Servicios: yellow, green (configurado en .env)
+Genera:
+-Tabla RAW de datos de taxi por servicio en Snowflake
 
-*Diseño de Silver:
-En la capa Silver se unifican los datasets de taxis verdes y amarillos previamente cargados en Bronze. Se aplican reglas de limpieza estrictas, como eliminar viajes con pasajeros ≤ 0, distancias negativas, montos inválidos o 
-tiempos inconsistentes (pickup posterior a dropoff). Además, se estandarizan formatos de fechas y horas, convirtiendo timestamps a UTC y hora local de Nueva York, y se calculan métricas derivadas como duración del viaje y 
-velocidad promedio. Se enriquecen los datos con información de zonas de pickup y dropoff, y se generan flags de calidad (duration_flag, speed_flag) para clasificar viajes atípicos. Finalmente, se implementan tests de integridad
- y consistencia mediante dbt, garantizando unicidad de identificadores, no-nulos en columnas críticas y cumplimiento de reglas de negocio.
+Notebook 02 - Enriquecimiento y Unificación
+-Depende de: Notebook 01 completado
+-Procesa: Datos RAW
+-Incluye: Integración con Taxi Zones, normalización de catálogos
+Genera:
+-Tabla enriquecida y unificada de datos de taxis con zonas de taxis en Snowflake
 
-*Diseño de Gold:
-En la capa Gold se construye la tabla de hechos principal (fact_trips) integrando los viajes estandarizados de Silver con las dimensiones asociadas: fecha de pickup y dropoff, tiempo de pickup y dropoff, zonas de origen y 
-destino, proveedor, tipo de tarifa, tipo de pago, tipo de servicio y flags de viaje. Se calculan métricas clave como duración, velocidad promedio, distancias recorridas, montos y porcentaje de propina. Cada dimensión se modela
- con claves surrogate (SK) y atributos descriptivos, asegurando relaciones 1:N consistentes para análisis OLAP. Esta capa permite consultas analíticas y reportes precisos, mientras que dbt se encarga de ejecutar los modelos y 
- validar la integridad referencial y consistencia de datos antes de disponibilizar la información para downstream.
+Notebook 03 - Construcción OBT
+- Depende de: Notebook 02 completado  
+- Procesa: Datos unificados hacia analytics
+- Incluye: Cálculo de derivadas, aplicación de idempotencia
+Genera:
+-Primera versión de la tabla OBT de Taxis
 
-#Clustering: llaves elegidas, métricas antes/después, conclusion.
+Notebook 04 - Validaciones y Exploración
+-Depende de: Notebook 03 completado
+-Verifica: Calidad de datos, rangos lógicos, consistencia
+Genera: 
+-Tabla OBT lista para consultas de negocio
 
-Para el tema del clustering se ejecutaron 6 pruebas para validar las ventajas de clusterizar la tabla de hechos y seleccionar las mejores llaves para los propósitos de optimizar las consultas. A continuación se describen pruebas junto a métricas
-Cabe destacar que todos los resultados de las presentes pruebas se encuentran en formato de capturas en la carpeta de evidencias:
+Notebook 05 - Análisis de Datos
+-Depende de: Notebook 04 completado
+-Consulta: tabla obt validada y hosteada en Snowflake
+-Responde: 20 preguntas de negocio desde tabla obt
 
-1. Select basado unicamente en fechas de pickup: Sin clustering para la presente query se escanearon 2312 particiones todas las existentes. La consulta tomo 1.5s y se escanearon 1.54GB. Posterior a la clusterización teniendo como llave principal al
-pickup_date_sk la consulta mejoro en tiempo a 947ms, solo se tuvieron que escanear 9 particiones y 1.91MB lo cual optimizo de sobremanera la presente consulta.
+#Diseño de raw y OBT (columnas, derivadas, metadatos, supuestos).
 
-2. Select basado unicamente en zona de pickup: Sin clustering para la presente query se escanearon 2312 particiones todas las existentes. La consulta tomo 1.6s y se escanearon 1.12GB. Posterior a la clusterización teniendo como llave principal al
-pickup_date_sk, seguida por pickup_zone_sk la consulta mejoro en tiempo a 1.3s, solo se tuvieron que escanear 1951 particiones y 910.13MB lo cual optimizo de sobremanera la presente consulta.
+*Esquema RAW
+El esquema raw funciona como capa de aterrizaje donde se preservan los datos en su 
+formato original con metadatos de ingesta. Se implementaron tablas particionadas por servicio 
+y período para optimizar el manejo de los volúmenes de datos.
 
-3. Select basado en fechas de pickup + pickup_zone: Sin clustering para la presente query se escanearon 2312 particiones todas las existentes. La consulta tomo 1.3s y se escanearon 2.19GB. Posterior a la clusterización teniendo como llave principal al
-pickup_date_sk + pickup_zone la consulta mejoro en tiempo a 416ms, solo se tuvieron que escanear 3 particiones y 1.3MB lo cual optimizo de sobremanera la presente consulta.
+Estructura de tablas RAW:
 
-4. Select basado en fechas de pickup + pickup_zone 2: Sin clustering para la presente query se escanearon 2312 particiones todas las existentes. La consulta tomo 866ms y se escanearon 2.18GB. Posterior a la clusterización teniendo como llave principal al
-pickup_date_sk + pickup_zone la consulta mejoro en tiempo a 503ms, solo se tuvieron que escanear 92 particiones y 52.43MB lo cual optimizo de sobremanera la presente consulta.
+NY_TAXI_RAW_YELLOW - Viajes de taxi amarillo RAW
+NY_TAXI_RAW_GREEN - Viajes de taxi verde RAW
+NY_TAXI_RAW_TAXI_ZONES - Zonas de Taxis de New York RAW
 
-5. Select basado en fechas de dropoff: Para verificar la diferencia de clusterizar con fecha de dropoff y de pickup se valido que al usar clusterizacion basada en pickup una consulta de fechas dropoff se demoro 953ms, se escanearon 119 parciones y 81.16MB.
-Por otro lado, al hacer la misma consulta pero con clusterizacion basada en dropoff_date la consulta mejoro a 416ms, 116 particiones y 55.45MB. La cual es una mejora a nivel de tiempo pero no de particiones escaneadas
+Columnas base preservadas del origen:
 
-6. Select basado en fechas de pickup, zonas de pickup y tipo de servicio: Sin clustering para la presente query se escanearon 2312 particiones todas las existentes. La consulta tomo 7s y se escanearon 38.08GB. Posterior a la clusterización teniendo como llave principal al
-pickup_date_sk + pickup_zone_sk + service_type_sk la consulta mejoro en tiempo a 1.8ms, solo se tuvieron que escanear 18 particiones y 245.75MB lo cual optimizo de sobremanera la presente consulta.
+Datos temporales: pickup/dropoff datetime
+Ubicaciones: PULocationID, DOLocationID
+Métricas de viaje: trip_distance, passenger_count
+Tarifas: fare_amount, tip_amount, tolls_amount, total_amount
+Identificadores: VendorID, RatecodeID, payment_type
 
-Tras ejecutar las seis pruebas de rendimiento, se evidenció que la clusterización impacta significativamente la eficiencia de las consultas, reduciendo tanto el tiempo de ejecución como el volumen de datos escaneados. Las pruebas mostraron que clusterizar únicamente 
-por pickup_date_sk mejora de manera notable las consultas basadas en fechas de pickup, mientras que incluir pickup_zone_sk optimiza consultas que filtran por zona. Adicionalmente, la combinación de pickup_date_sk + pickup_zone_sk + service_type_sk ofrece mejoras consistentes
-en consultas más complejas que involucran fechas, zonas y tipo de servicio, reduciendo drásticamente tanto el número de particiones escaneadas como el tamaño de datos leídos.
+Metadatos de ingesta agregados:
 
-#Pruebas (qué validan y cómo interpretar resultados).
+run_id - Identificador único de la ejecución
+source_year / source_month - Período de origen
+ingested_at_utc - Timestamp de ingesta
+service_type - Tipo de servicio (yellow/green)
 
-*Validación de unicidad de trip_id: asegura que cada viaje tenga un identificador único.
+*Esquema ANALYTICS - OBT
+La OBT consolida todos los datos de viajes de taxis de New York en una tabla que junta toda 
+la información necesaria validada y depurada a manera de ejecutar consultas de negocio
+sobre la misma
 
-*Chequeo de no-nulos en columnas críticas: garantiza que campos como pickup_datetime, dropoff_datetime, fare_amount y passenger_count no contengan valores vacíos.
+Columnas de la OBT:
 
-*Reglas de negocio: expresiones que confirman condiciones como trip_distance >= 0, fare_amount >= 0, y dropoff_datetime_utc > pickup_datetime_utc.
+Temporales:
+pickup_datetime, dropoff_datetime - Timestamps originales
+pickup_date, pickup_hour - Componentes temporales
+dropoff_date, dropoff_hour - Componentes temporales
+trip_duration_min - Duración calculada en minutos
 
-*Integridad referencial: validación de claves foráneas hacia dimensiones (vendor_sk, zone_sk, payment_type_sk, etc.).
+Ubicaciones:
+pu_location_id, do_location_id - IDs originales
+pu_zone, pu_borough - Nombres desnormalizados
+do_zone, do_borough - Nombres desnormalizados
 
-*Interpretación de resultados: tests exitosos indican que los datos cumplen las reglas definidas; fallos apuntan a inconsistencias, datos faltantes o errores de transformación que deben revisarse antes de usar la capa Silver o Gold.
+Servicio y Códigos:
+vendor_id, vendor_name - Desnormalizado
+rate_code_id, rate_code_desc - Desnormalizado
+payment_type, payment_type_desc - Desnormalizado
 
-#Troubleshooting (archivos faltantes, fallas de carga, límites, costos).
+Métricas y Tarifas:
+passenger_count, trip_distance
+fare_amount, extra, mta_tax, tip_amount
+tolls_amount, improvement_surcharge
+congestion_surcharge, airport_fee, total_amount
 
-*Archivos Parquet faltantes en la fuente pública: revisar URL de descarga y permisos de acceso.
+Derivadas Calculadas:
+trip_duration_min - Duración del viaje en minutos
+avg_speed_mph - Velocidad promedio (solo viajes válidos)
+tip_pct - Porcentaje de propina sobre tarifa base
 
-*Fallas de carga en Snowflake: validar credenciales, roles y esquema de destino.
+Metadatos:
+run_id - Trazabilidad de la ejecución
+ingested_at_utc - Fecha de procesamiento
+source_service - Servicio de origen
+source_year, source_month - Período origen
 
-*Errores durante ejecución de dbt: verificar logs de dbt run y dbt test, y resolver dependencias faltantes (dbt deps).
+Supuestos de Diseño
+Clave Natural: Se define basada en pickup_datetime, PULocationID, DOLocationID y VendorID para garantizar identificación única de viajes en merges
 
-*Límites de memoria o CPU durante procesamiento batch: ajustar tamaño de lotes en loaders y exportadores.
+Estrategia de Idempotencia: Implementación de UPSERT basado en clave natural, permitiendo reingesta sin duplicados.
 
-*Costos de almacenamiento o computación en Snowflake: revisar tamaño de tablas y uso de warehouse durante transformaciones masivas.
+Manejo de Datos: Se han filtrado nulos en campos obligatorios y se ha definido validaciones lógicas para datos númericos de forma que los mismos
+cumplan con rangos lógicos
 
-*Problemas de idempotencia: asegurar checkpoint JSON actualizado y consistencia de run_id para reanudar cargas interrumpidas.
+Cálculo de Derivadas:
 
-*Datos inconsistentes o nulos en columnas críticas: aplicar reglas de limpieza en Silver antes de pasar a Gold.
+tip_pct: tip_amount / fare_amount (solo cuando fare_amount > 0)
 
+avg_speed_mph: trip_distance / (trip_duration_min/60) (solo viajes con duración y distancia válidas)
 
+trip_duration_min: (dropoff_datetime - pickup_datetime) en minutos
 
+#Calidad/auditoría: qué se valida y dónde se ve.
+
+*Validación de Conectividad con Snowflake desde Spark:
+Inicio sesión de Spark y posteriormente genero una conexión con Snowflake con mis credenciales y ejecuto una query simple de SELECT current_version()
+esto lo valido en todos los notebooks antes de proceder con el consumo, procesamiento y/o lectura de datos
+
+*Validación de Ingesta de datos:
+En todos los notebooks he implementado logs en forma de prints y manejo de excepciones para ir monitoreando el proceso de consumo de todos los datos.
+A su vez una vez los mismos se iban consumiendo ingresaba en Snowflake a verificar que las tablas aumenten en cantidad de filas y monitoreaba los datos
+recien ingresados con queries simples desde Snowflake
+
+*Validación del contenedor de docker:
+Al tener spark-notebook: Jupyter+Spark desde un contenedor de docker verificaba que el mismo estuviera funcionando correctamente con el comando docker ps,
+con el Docker Desktop verificando que el contenedor este arriba e ingresando a localhost con el puerto definido y verificando que pudiera ingresar
+sin problema a Jupyter
+
+*Validación de datos consumidos en OBT:
+En el Notebook 4 durante el proceso de generación de la tabla OBT se aplican múltiples validaciones de calidad de datos para garantizar 
+la coherencia y consistencia de los registros. En primer lugar, se eliminan todas las filas que contienen valores nulos en campos 
+críticos como DO_LOCATION_ID, PU_LOCATION_ID, PASSENGER_COUNT, PAYMENT_TYPE, RATE_CODE_ID, PICKUP_DATETIME, DROPOFF_DATETIME, TRIP_DISTANCE 
+y VENDOR_ID. Posteriormente, se filtran los registros que presentan valores incoherentes, restringiendo el número de pasajeros entre 1 y 9, 
+los montos monetarios (EXTRA, FARE_AMOUNT, METROPOLITAN_TAX, TIP_AMOUNT, TOLLS_AMOUNT, TOTAL_AMOUNT) a valores no negativos, las distancias 
+de viaje (TRIP_DISTANCE) a valores mayores que cero, y la duración del viaje (TRIP_DURATION_MIN) entre 1 y 180 minutos. Además, se asegura 
+que la velocidad promedio (AVG_SPEED_MPH) se mantenga entre 0 y 100 mph y que el porcentaje de propina (TIP_PCT) sea no negativo. 
+Finalmente, se validan las ubicaciones de recogida y destino (PU_LOCATION_ID, DO_LOCATION_ID) para que estén dentro del rango 1 a 265, 
+y las fechas (MONTH, YEAR) se restringen a meses válidos (1–12) y años comprendidos entre 2015 y 2025.
